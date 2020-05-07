@@ -585,8 +585,13 @@ class ShellProcess():
                   r'.+?(?={marker})'.format(marker=self.marker),
                   TIMEOUT]
 
+        start = time.time()
         index, before, match, _ = self.shell.console.expect(
             expect, timeout=wait)
+        end = time.time()
+
+        self.shell.logger.debug("Match Index %i, timeout %.2f used %.2f ",
+                index, wait, end - start)
 
         if index == 0:
             stdout = match.group(1)
@@ -595,6 +600,11 @@ class ShellProcess():
         elif index == 1:
             self.hit_marker = True
             stdout = match.group(0)
+            # wait for the exit code
+            time_left = wait - (end - start)
+            if time_left > 0:
+                out, _ = self.read(time_left)
+                stdout = stdout + out
         elif index == 2:
             if before and not self.hit_marker:
                 size = len(before) - self._get_len_partial_marker(before)
