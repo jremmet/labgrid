@@ -51,6 +51,7 @@ class ShellDriver(CommandMixin, Driver, CommandProtocol, FileTransferProtocol):
         )  # pylint: disable=attribute-defined-outside-init,anomalous-backslash-in-string
         self.logger = logging.getLogger("{}:{}".format(self, self.target))
         self._status = 0  # pylint: disable=attribute-defined-outside-init
+        self.shell_in_use = False
 
         self._xmodem_cached_rx_cmd = ""
         self._xmodem_cached_sx_cmd = ""
@@ -80,24 +81,14 @@ class ShellDriver(CommandMixin, Driver, CommandProtocol, FileTransferProtocol):
         Arguments:
         cmd - cmd to run on the shell
         """
-        # FIXME: Handle pexpect Timeout
-        self._check_prompt()
-        marker = gen_marker()
-        # hide marker from expect
-        cmp_command = '''MARKER='{}''{}' run {}'''.format(
-            marker[:4], marker[4:], shlex.quote(cmd)
-        )
-        self.console.sendline(cmp_command)
-        _, _, match, _ = self.console.expect(r'{marker}(.*){marker}\s+(\d+)\s+{prompt}'.format(
-            marker=marker, prompt=self.prompt
-        ), timeout=timeout)
-        # Remove VT100 Codes, split by newline and remove surrounding newline
-        data = self.re_vt100.sub('', match.group(1).decode(codec, decodeerrors)).split('\r\n')
-        if data and not data[-1]:
-            del data[-1]
+        process = self._popen(cmd)
+        data, _ = process.read(timeout)
+        exitcode = process.poll()
+        if exitcode is None:
+            raise TIMEOUT("Timeout of %.2f seconds exceeded" % timeout)
+        data = process.clean_output(data, codec=codec, decodeerrors=decodeerrors)
         self.logger.debug("Received Data: %s", data)
-        # Get exit code
-        exitcode = int(match.group(2))
+
         return (data, [], exitcode)
 
     @Driver.check_active
@@ -533,3 +524,108 @@ class ShellDriver(CommandMixin, Driver, CommandProtocol, FileTransferProtocol):
             IOError: if the provided localfile could not be found
         """
         return self._run_script_file(scriptfile, *args, timeout=timeout)
+
+    @Driver.check_active
+    def popen(self, cmd):
+        return self._popen(cmd)
+
+    def _popen(self, cmd):
+        return ShellProcess(shell=self, cmd=cmd)
+
+@attr.s(eq=False)
+class ShellProcess():
+    """Represents a shell background process"""
+    shell = attr.ib(validator=attr.validators.instance_of(ShellDriver))
+    cmd = attr.ib(validator=attr.validators.instance_of(str))
+
+    def __attrs_post_init__(self):
+        if self.shell.shell_in_use:
+            raise Exception("Already a shell process running")
+        self.shell_in_use = True
+        self.exitcode = None
+        self.shell._check_prompt()
+        self.marker = gen_marker()
+        self.hit_marker = False
+        # hide marker from expect
+        cmp_command = '''MARKER='{}''{}' run {}'''.format(
+            self.marker[:4], self.marker[4:], shlex.quote(self.cmd)
+        )
+        self.shell.console.sendline(cmp_command)
+        self.shell.console.expect(
+            r'{marker}'.format(marker=self.marker), timeout=1)
+
+    def __del__(self):
+        if self.exitcode is None:
+            raise Exception("process may still run")
+
+    def poll(self):
+        """Return status of the process"""
+        return self.exitcode
+
+    def read(self, wait=0):
+        """
+        Read stdout/stderr of background process until wait. For wait=0 (default) the call
+        won't block and will return stdout/stderr until current EOF.
+        Returns a tuple (stdout, stderr).
+        Args:
+            wait (int): will block until wait is exceeded or process terminates,
+                        wait=0 returns immediately (default)
+        Returns:
+            (stdout (bytes), stderr (bytes))
+        """
+        stdout = bytes()
+        stderr = bytes()
+
+        # skip reading if process terminated
+        if self.exitcode is not None:
+            return stdout, stderr
+
+        expect = [r'^(.*){marker}\s+(\d+)\s+{prompt}'.format(
+            marker=self.marker, prompt=self.shell.prompt),
+                  r'.+?(?={marker})'.format(marker=self.marker),
+                  TIMEOUT]
+
+        index, before, match, _ = self.shell.console.expect(
+            expect, timeout=wait)
+
+        if index == 0:
+            stdout = match.group(1)
+            self.exitcode = int(match.group(2))
+            self.shell.shell_in_use = False
+        elif index == 1:
+            self.hit_marker = True
+            stdout = match.group(0)
+        elif index == 2:
+            if before and not self.hit_marker:
+                size = len(before) - self._get_len_partial_marker(before)
+                stdout = self.shell.console._expect.read(size=size)
+        else:
+            raise RuntimeError('expect returned invalid index')  # impossible
+
+        return stdout, stderr
+
+    def kill(self):
+        """Send STRG C to a runnig process and ste exitcode to 130"""
+        if not self.exitcode:
+            # send CTRL+C
+            self.shell.console.write('\x03'.encode('ASCII'))
+            self.shell.console.expect(self.shell.prompt)
+            self.exitcode = 130
+            self.shell.shell_in_use = False
+
+    def _get_len_partial_marker(self, buf):
+        """Test if the end of buf contains a partial marker"""
+        for index in range(len(self.marker) - 1, 0, -1):
+            if len(buf) < index:
+                continue
+            if buf[-index:] == self.marker[:index]:
+                return index
+        return 0
+
+    def clean_output(self, data, codec="utf-8", decodeerrors="strict"):
+        """ Remove VT100 Codes, split by newline and remove surrounding newline"""
+        data = self.shell.re_vt100.sub('', data.decode(codec, decodeerrors)).split('\r\n')
+        if data and not data[-1]:
+            del data[-1]
+
+        return data
