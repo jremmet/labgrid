@@ -545,7 +545,6 @@ class ShellProcess():
         self.exitcode = None
         self.shell._check_prompt()
         self.marker = gen_marker()
-        self.hit_marker = False
         # hide marker from expect
         cmp_command = '''MARKER='{}''{}' run {}'''.format(
             self.marker[:4], self.marker[4:], shlex.quote(self.cmd)
@@ -582,35 +581,22 @@ class ShellProcess():
 
         expect = [r'^(.*){marker}\s+(\d+)\s+{prompt}'.format(
             marker=self.marker, prompt=self.shell.prompt),
-                  r'.+?(?={marker})'.format(marker=self.marker),
                   TIMEOUT]
 
-        start = time.time()
         index, before, match, _ = self.shell.console.expect(
             expect, timeout=wait)
-        end = time.time()
-
-        self.shell.logger.debug("Match Index %i, timeout %.2f used %.2f ",
-                index, wait, end - start)
 
         if index == 0:
             stdout = match.group(1)
             self.exitcode = int(match.group(2))
             self.shell.shell_in_use = False
         elif index == 1:
-            self.hit_marker = True
-            stdout = match.group(0)
-            # wait for the exit code
-            time_left = wait - (end - start)
-            if time_left > 0:
-                out, _ = self.read(time_left)
-                stdout = stdout + out
-        elif index == 2:
-            if before and not self.hit_marker:
-                size = len(before) - self._get_len_partial_marker(before)
+            if before:
+                # keep (partial) marker for next expect
+                size = len(before) - self._get_marker_len(before)
                 stdout = self.shell.console._expect.read(size=size)
         else:
-            raise RuntimeError('expect returned invalid index')  # impossible
+            raise RuntimeError('expect ^returned invalid index')  # impossible
 
         return stdout, stderr
 
@@ -623,12 +609,18 @@ class ShellProcess():
             self.exitcode = 130
             self.shell.shell_in_use = False
 
-    def _get_len_partial_marker(self, buf):
-        """Test if the end of buf contains a partial marker"""
-        for index in range(len(self.marker) - 1, 0, -1):
+    def _get_marker_len(self, buf):
+        """Return the length of the marker and following bytes."""
+        marker = self.marker.encode()
+
+        if marker in buf:
+            return len(buf) - buf.find(marker)
+
+        #look for partial marker at the end of buf
+        for index in range(len(marker) - 1, 0, -1):
             if len(buf) < index:
                 continue
-            if buf[-index:] == self.marker[:index]:
+            if buf[-index:] == marker[:index]:
                 return index
         return 0
 
