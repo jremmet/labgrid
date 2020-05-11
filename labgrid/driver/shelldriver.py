@@ -526,7 +526,7 @@ class ShellDriver(CommandMixin, Driver, CommandProtocol, FileTransferProtocol):
         return self._run_script_file(scriptfile, *args, timeout=timeout)
 
     @Driver.check_active
-    def popen(self, cmd):
+    def Popen(self, cmd):
         return self._popen(cmd)
 
     def _popen(self, cmd):
@@ -600,9 +600,9 @@ class ShellProcess():
 
         return stdout, stderr
 
-    def kill(self):
+    def terminate(self):
         """Send STRG C to a runnig process and ste exitcode to 130"""
-        if not self.exitcode:
+        if self.exitcode is None:
             # send CTRL+C
             self.shell.console.write('\x03'.encode('ASCII'))
             self.shell.console.expect(self.shell.prompt)
