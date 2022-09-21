@@ -102,6 +102,19 @@ class SerialDriver(ConsoleExpectMixin, Driver, ConsoleProtocol):
             raise TIMEOUT(f"Timeout of {timeout:.2f} seconds exceeded or connection closed by peer")
         return res
 
+    def _readline(self, timeout: float = 0.0):
+        """
+        Read line terminated with '\\n' from the serial port
+
+        Keyword Arguments:
+        timeout -- read timeout value in seconds
+        """
+        self.serial.timeout = timeout
+        res = self.serial.readline()
+        if not res:
+            raise TIMEOUT(f"Timeout of {timeout:.2f} seconds exceeded or connection closed by peer")
+        return res
+
     def _write(self, data: bytes):
         """
         Writes 'data' to the serialport
