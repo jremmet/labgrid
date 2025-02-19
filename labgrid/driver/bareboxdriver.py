@@ -1,4 +1,3 @@
-import logging
 import shlex
 
 import attr
@@ -10,6 +9,7 @@ from ..step import step
 from ..util import gen_marker, Timeout, re_vt100
 from .common import Driver
 from .commandmixin import CommandMixin
+from .exception import ExecutionError
 
 
 @target_factory.reg_driver
@@ -26,6 +26,7 @@ class BareboxDriver(CommandMixin, Driver, CommandProtocol, LinuxBootProtocol):
         prompt (str): barebox prompt to match
         autoboot (regex): optional, autoboot message to match
         interrupt (str): optional, string to interrupt autoboot (use "\x03" for CTRL-C)
+        boot_expression (regex): optional, string to search for on barebox start
         bootstring (regex): optional, regex indicating that the Linux Kernel is booting
         password (str): optional, password to use for access to the shell
         login_timeout (int): optional, timeout for access to the shell
@@ -34,14 +35,17 @@ class BareboxDriver(CommandMixin, Driver, CommandProtocol, LinuxBootProtocol):
     prompt = attr.ib(default="", validator=attr.validators.instance_of(str))
     autoboot = attr.ib(default="stop autoboot", validator=attr.validators.instance_of(str))
     interrupt = attr.ib(default="\n", validator=attr.validators.instance_of(str))
+    boot_expression = attr.ib(default=r"[\n]barebox 20\d+", validator=attr.validators.instance_of(str))
     bootstring = attr.ib(default=r"Linux version \d", validator=attr.validators.instance_of(str))
     password = attr.ib(default="", validator=attr.validators.instance_of(str))
     login_timeout = attr.ib(default=60, validator=attr.validators.instance_of(int))
+    boot_detected = attr.ib(default=False, validator=attr.validators.instance_of(bool))
 
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
-        self.logger = logging.getLogger(f"{self}:{self.target}")
         self._status = 0
+        # barebox' default log level, used as fallback if no log level can be saved
+        self.saved_log_level = 7
 
     def on_activate(self):
         """Activate the BareboxDriver
@@ -63,7 +67,7 @@ class BareboxDriver(CommandMixin, Driver, CommandProtocol, LinuxBootProtocol):
     def run(self, cmd: str, *, timeout: int = 30):
         return self._run(cmd, timeout=timeout)
 
-    def _run(self, cmd: str, *, timeout: int = 30, codec: str = "utf-8", decodeerrors: str = "strict"):  # pylint: disable=unused-argument,line-too-long
+    def _run(self, cmd: str, *, timeout: int = 30, adjust_log_level: bool = True, codec: str = "utf-8", decodeerrors: str = "strict"):  # pylint: disable=unused-argument,line-too-long
         """
         Runs the specified command on the shell and returns the output.
 
@@ -78,7 +82,14 @@ class BareboxDriver(CommandMixin, Driver, CommandProtocol, LinuxBootProtocol):
         marker = gen_marker()
         # hide marker from expect
         hidden_marker = f'"{marker[:4]}""{marker[4:]}"'
-        cmp_command = f'''echo -o /cmd {shlex.quote(cmd)}; echo {hidden_marker}; sh /cmd; echo {hidden_marker} $?;'''  # pylint: disable=line-too-long
+        # generate command with marker and log level adjustment
+        cmp_command = f'echo -o /cmd {shlex.quote(cmd)}; echo {hidden_marker};'
+        if self.saved_log_level and adjust_log_level:
+            cmp_command += f' global.loglevel={self.saved_log_level};'
+        cmp_command += f' sh /cmd; echo {hidden_marker} $?;'
+        if self.saved_log_level and adjust_log_level:
+            cmp_command += ' global.loglevel=0;'
+
         if self._status == 1:
             self.console.sendline(cmp_command)
             _, _, match, _ = self.console.expect(
@@ -101,6 +112,8 @@ class BareboxDriver(CommandMixin, Driver, CommandProtocol, LinuxBootProtocol):
         self._status = 0
         self.console.sendline("reset")
         self._await_prompt()
+        if not self.boot_detected:
+            raise ExecutionError(f"No reboot message detected: {self.boot_expression}")
 
     def get_status(self):
         """Retrieve status of the BareboxDriver
@@ -141,8 +154,9 @@ class BareboxDriver(CommandMixin, Driver, CommandProtocol, LinuxBootProtocol):
         # occours, we can't lose any data this way.
         last_before = None
         password_entered = False
+        self.boot_detected = False
 
-        expectations = [self.prompt, self.autoboot, "Password: ", TIMEOUT]
+        expectations = [self.prompt, self.autoboot, "Password: ", self.boot_expression, TIMEOUT]
         while True:
             index, before, _, _ = self.console.expect(
                 expectations,
@@ -170,6 +184,10 @@ class BareboxDriver(CommandMixin, Driver, CommandProtocol, LinuxBootProtocol):
                 password_entered = True
 
             elif index == 3:
+                # we detect a boot
+                self.boot_detected = True
+
+            elif index == 4:
                 # expect hit a timeout while waiting for a match
                 if before == last_before:
                     # we did not receive anything during the previous expect cycle
@@ -186,6 +204,18 @@ class BareboxDriver(CommandMixin, Driver, CommandProtocol, LinuxBootProtocol):
 
         self._check_prompt()
 
+        # remember barebox' log level - we don't expect to be interrupted here
+        # by pollers because no hardware interaction is triggered by echo, so
+        # it should be safe to use the usual shell wrapper via _run()
+        stdout, _, exitcode = self._run("echo $global.loglevel", adjust_log_level=False)
+        [saved_log_level] = stdout
+        if exitcode == 0 and saved_log_level.isnumeric():
+            self.saved_log_level = saved_log_level
+
+        # silence barebox, the driver can get confused by asynchronous messages
+        # logged to the console otherwise
+        self._run("global.loglevel=0", adjust_log_level=False)
+
     @Driver.check_active
     def await_boot(self):
         """Wait for the initial Linux version string to verify we successfully
@@ -199,6 +229,9 @@ class BareboxDriver(CommandMixin, Driver, CommandProtocol, LinuxBootProtocol):
 
         Args:
             name (str): name of the entry to boot"""
+        # recover saved log level
+        self._run(f"global.loglevel={self.saved_log_level}", adjust_log_level=False)
+
         if name:
             self.console.sendline(f"boot -v {name}")
         else:

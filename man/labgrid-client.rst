@@ -7,8 +7,7 @@ labgrid-client interface to control boards
 
 :Author: Rouven Czerwinski <r.czerwinski@pengutronix.de>
 :organization: Labgrid-Project
-:Date:   2017-04-15
-:Copyright: Copyright (C) 2016-2017 Pengutronix. This library is free software;
+:Copyright: Copyright (C) 2016-2025 Pengutronix. This library is free software;
 	    you can redistribute it and/or modify it under the terms of the GNU
 	    Lesser General Public License as published by the Free Software
 	    Foundation; either version 2.1 of the License, or (at your option)
@@ -38,8 +37,8 @@ OPTIONS
     display command line help
 -p PLACE, --place PLACE
     specify the place to operate on
--x URL, --crossbar URL
-    the crossbar url of the coordinator, defaults to ``ws://127.0.0.1:20408/ws``
+-x ADDRESS, --coordinator ADDRESS
+    coordinator ``HOST[:PORT]`` to connect to, defaults to ``127.0.0.1:20408``
 -c CONFIG, --config CONFIG
     set the configuration file
 -s STATE, --state STATE
@@ -91,15 +90,10 @@ LG_ENV
 This variable can be used to specify the configuration file to use without
 using the ``--config`` option, the ``--config`` option overrides it.
 
-LG_CROSSBAR
-~~~~~~~~~~~
-This variable can be used to set the default crossbar URL (instead of using the
-``-x`` option).
-
-LG_CROSSBAR_REALM
-~~~~~~~~~~~~~~~~~
-This variable can be used to set the default crossbar realm to use instead of
-``realm1``.
+LG_COORDINATOR
+~~~~~~~~~~~~~~
+This variable can be used to set the default coordinator in the format
+``HOST[:PORT]`` (instead of using the ``-x`` option).
 
 LG_PROXY
 ~~~~~~~~
@@ -152,7 +146,7 @@ LABGRID-CLIENT COMMANDS
 
 ``set-comment`` comment         Update or set the place comment
 
-``set-tags`` comment            Set place tags (key=value)
+``set-tags`` key=value          Set place tags (key=value)
 
 ``add-match`` match             Add one (or multiple) match pattern(s) to a place, see MATCHES
 
@@ -175,11 +169,11 @@ LABGRID-CLIENT COMMANDS
 
 ``env``                         Generate a labgrid environment file for a place
 
-``power (pw)`` action           Change (or get) a place's power status, where action is one of get, on, off, status
+``power (pw)`` action           Change (or get) a place's power status, where action is one of get, on, off, cycle
 
-``io`` action                   Interact with GPIO (OneWire, relays, ...) devices, where action is one of high, low, get
+``io`` action [name]            Interact with GPIO (OneWire, relays, ...) devices, where action is one of high, low, get
 
-``console (con)``               Connect to the console
+``console (con)`` [name]        Connect to the console
 
 ``dfu`` arg                     Run dfu commands
 
@@ -193,13 +187,13 @@ LABGRID-CLIENT COMMANDS
 
 ``usb-mux`` action              Switch USB Muxer, where action is one of off, dut-device, host-dut, host-device, host-dut+host-device
 
-``ssh``                         Connect via SSH
+``ssh`` [command]               Connect via SSH. Additional arguments are passed to ssh.
 
-``scp``                         Transfer file via scp (use ':dir/file' for the remote side)
+``scp`` source destination      Transfer file via scp (use ':dir/file' for the remote side)
 
-``rsync``                       Transfer files via rsync (use ':dir/file' for the remote side)
+``rsync`` source destination    Transfer files via rsync (use ':dir/file' for the remote side)
 
-``sshfs``                       Mount a remote path via sshfs
+``sshfs`` remotepath mountpoint Mount a remote path via sshfs
 
 ``forward``                     Forward local port to remote target
 
@@ -211,7 +205,9 @@ LABGRID-CLIENT COMMANDS
 
 ``tmc`` command                 Control a USB TMC device
 
-``write-image``                 Write images onto block devices (USBSDMux, USB Sticks, …)
+``write-files`` filename(s)     Copy files onto mass storage device
+
+``write-image`` filename        Write images onto block devices (USBSDMux, USB Sticks, …)
 
 ``reserve`` filter              Create a reservation
 

@@ -7,6 +7,7 @@ from ..remote.client import UserError
 from ..resource.remote import RemotePlace
 from ..util.ssh import sshmanager
 from ..logging import DEFAULT_FORMAT
+from .hooks import LABGRID_ENV_KEY
 
 # pylint: disable=redefined-outer-name
 
@@ -27,8 +28,8 @@ def pytest_addoption(parser):
         '--lg-coordinator',
         action='store',
         dest='lg_coordinator',
-        metavar='CROSSBAR_URL',
-        help='labgrid coordinator websocket URL.')
+        metavar='COORDINATOR_ADDRESS',
+        help='labgrid coordinator HOST[:PORT].')
     group.addoption(
         '--lg-log',
         action='store',
@@ -60,7 +61,7 @@ def env(request, record_testsuite_property):
     """Return the environment configured in the supplied configuration file.
     It contains the targets contained in the configuration file.
     """
-    env = request.config._labgrid_env
+    env = request.config.stash[LABGRID_ENV_KEY]
 
     if not env:
         pytest.skip("missing environment config (use --lg-env)")

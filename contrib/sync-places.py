@@ -15,8 +15,10 @@
 # limitations under the License.
 
 import argparse
+import asyncio
 from contextlib import contextmanager
 from labgrid.remote.client import start_session
+from labgrid.remote.generated import labgrid_coordinator_pb2
 from labgrid.util.proxy import proxymanager
 import os
 import sys
@@ -51,25 +53,37 @@ def main():
         for name in remove_places:
             print(f"Removing place {name}")
             if not args.dry_run:
-                await session.call("org.labgrid.coordinator.del_place", name)
+                request = labgrid_coordinator_pb2.DeletePlaceRequest(name=name)
+                await session.stub.DeletePlace(request)
+                await session.sync_with_coordinator()
+
             changed = True
 
         for name in config["places"]:
             if not name in seen_places:
                 print(f"Adding place {name}")
                 if not args.dry_run:
-                    await session.call("org.labgrid.coordinator.add_place", name)
+                    request = labgrid_coordinator_pb2.AddPlaceRequest(name=name)
+                    await session.stub.AddPlace(request)
+                    await session.sync_with_coordinator()
+
                 changed = True
 
         for name in config["places"]:
-            matches = config["places"][name].get("matches", [])
+            matches = []
+            for m in config["places"][name].get("matches", []):
+                if isinstance(m, dict):
+                    match = list(m.keys())[0]
+                    matches.append((match, m[match]))
+                else:
+                    matches.append((m, None))
+
             seen_matches = set()
             remove_matches = set()
             place_tags = {}
             if name in seen_places:
                 place = session.places[name]
-                for m in place.matches:
-                    m = repr(m)
+                for m in [(repr(x), x.rename) for x in place.matches]:
                     if m in matches:
                         seen_matches.add(m)
                     else:
@@ -77,23 +91,38 @@ def main():
                 place_tags = place.tags
 
             for m in remove_matches:
-                print(f"Deleting match '{m}' for place {name}")
+                match, rename = m
+                if rename:
+                    print(f"Deleting named match '{match} -> {rename}' for place {name}")
+                else:
+                    print(f"Deleting match '{match}' for place {name}")
                 if not args.dry_run:
-                    await session.call(
-                        "org.labgrid.coordinator.del_place_match", name, m
-                    )
+                    request = labgrid_coordinator_pb2.DeletePlaceMatchRequest(placename=name, pattern=match)
+                    await session.stub.DeletePlaceMatch(request)
+                    await session.sync_with_coordinator()
+
                 changed = True
 
             for m in matches:
                 if not m in seen_matches:
-                    print(f"Adding match '{m}' for place {name}")
+                    match, rename = m
+                    if rename:
+                        print(f"Adding named match '{match} -> {rename}' for place {name}")
+                    else:
+                        print(f"Adding match '{match}' for place {name}")
+
                     if not args.dry_run:
-                        await session.call(
-                            "org.labgrid.coordinator.add_place_match", name, m
-                        )
+                        request = labgrid_coordinator_pb2.AddPlaceMatchRequest(placename=name, pattern=match, rename=rename)
+                        await session.stub.AddPlaceMatch(request)
+                        await session.sync_with_coordinator()
                     changed = True
 
             tags = config["places"][name].get("tags", {}).copy()
+            for k, v in tags.items():
+                if not isinstance(k, str) or not isinstance(v, str):
+                    del(tags[k])
+                    tags[str(k)] = str(v)
+
             if place_tags != tags:
                 print(
                     "Setting tags for place %s to %s"
@@ -111,16 +140,20 @@ def main():
                         tags[k] = ""
 
                 if not args.dry_run:
-                    await session.call(
-                        "org.labgrid.coordinator.set_place_tags", name, tags
-                    )
+                    request = labgrid_coordinator_pb2.SetPlaceTagsRequest(placename=name, tags=tags)
+                    await session.stub.SetPlaceTags(request)
+                    await session.sync_with_coordinator()
+
                 changed = True
 
     async def do_dump(session, args):
         config = {"places": {}}
         for name, place in session.places.items():
             config["places"][name] = {
-                "matches": [repr(m) for m in place.matches],
+                "matches": [
+                    {repr(m): m.rename} if m.rename else repr(m)
+                    for m in place.matches
+                    ],
                 "tags": {k: v for k, v in place.tags.items()},
             }
 
@@ -139,6 +172,7 @@ def main():
                 my-place1: # Replace with your place
                   matches: # A list of match patterns. Replace with your match patterns
                     - "*/my-place1/*"
+                    - "exporter/my-place1/resource": name # named matches supported
                   tags: # A dictionary of key/value tags. Replace with your tags
                     board: awesomesauce
                     bar: baz
@@ -150,11 +184,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "--crossbar",
+        "--coordinator",
         "-x",
-        metavar="URL",
-        default=os.environ.get("LG_CROSSBAR", "ws://127.0.0.1:20408/ws"),
-        help="Crossbar websocket URL (default: %(default)s)",
+        metavar="ADDRESS",
+        default=os.environ.get("LG_COORDINATOR", "127.0.0.1:20408"),
+        help="Coordinator address as HOST[:PORT] (default: %(default)s)",
     )
     parser.add_argument("--proxy", "-P", help="Proxy connections via given ssh host")
 
@@ -195,11 +229,19 @@ def main():
     if args.proxy:
         proxymanager.force_proxy(args.proxy)
 
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     session = start_session(
-        args.crossbar, os.environ.get("LG_CROSSBAR_REALM", "realm1"), {}
+        args.coordinator,
+        loop=loop,
     )
 
-    return session.loop.run_until_complete(args.func(session, args))
+    try:
+        return loop.run_until_complete(args.func(session, args))
+    finally:
+        loop.run_until_complete(session.stop())
+        loop.run_until_complete(session.close())
 
 
 if __name__ == "__main__":

@@ -2,7 +2,6 @@
 """The ShellDriver provides the CommandProtocol, ConsoleProtocol and
  InfoProtocol on top of a SerialPort."""
 import io
-import logging
 import re
 import shlex
 import ipaddress
@@ -48,7 +47,7 @@ class ShellDriver(CommandMixin, Driver, CommandProtocol, FileTransferProtocol):
     prompt = attr.ib(validator=attr.validators.instance_of(str))
     login_prompt = attr.ib(validator=attr.validators.instance_of(str))
     username = attr.ib(validator=attr.validators.instance_of(str))
-    password = attr.ib(default="", validator=attr.validators.instance_of(str))
+    password = attr.ib(default=None, validator=attr.validators.optional(attr.validators.instance_of(str)))
     keyfile = attr.ib(default="", validator=attr.validators.instance_of(str))
     login_timeout = attr.ib(default=60, validator=attr.validators.instance_of(int))
     console_ready = attr.ib(default="", validator=attr.validators.instance_of(str))
@@ -58,7 +57,6 @@ class ShellDriver(CommandMixin, Driver, CommandProtocol, FileTransferProtocol):
 
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
-        self.logger = logging.getLogger(f"{self}:{self.target}")
         self._status = 0
 
         self._xmodem_cached_rx_cmd = ""
@@ -143,7 +141,7 @@ class ShellDriver(CommandMixin, Driver, CommandProtocol, FileTransferProtocol):
                 else:
                     # we got a prompt. no need for any further action to
                     # activate this driver.
-                    self.status = 1
+                    self._status = 1
                     break
 
             elif index == 1:
@@ -152,7 +150,7 @@ class ShellDriver(CommandMixin, Driver, CommandProtocol, FileTransferProtocol):
                 did_login = True
 
             elif index == 2:
-                if self.password:
+                if self.password is not None:
                     self.console.sendline(self.password)
                 else:
                     raise Exception("Password entry needed but no password set")
@@ -311,7 +309,7 @@ class ShellDriver(CommandMixin, Driver, CommandProtocol, FileTransferProtocol):
         """
 
         marker = gen_marker()
-        marked_cmd = f"echo '{marker[:4]}''{marker[4:]}'; {cmd}"
+        marked_cmd = f"echo -n '{marker[:4]}''{marker[4:]}'; {cmd}"
         self.console.sendline(marked_cmd)
         self.console.expect(marker, timeout=30)
 
@@ -569,7 +567,7 @@ class ShellDriver(CommandMixin, Driver, CommandProtocol, FileTransferProtocol):
 
         regex = r"""default\s+via # leading strings
                 \s+\S+ # IP address
-                \s+dev\s+(\w+) # interface"""
+                \s+dev\s+([\w\.-]+) # interface"""
 
         default_route = self._run_check(f"ip -{version} route list default")
         matches = re.findall(regex, "\n".join(default_route), re.X)
@@ -598,7 +596,7 @@ class ShellDriver(CommandMixin, Driver, CommandProtocol, FileTransferProtocol):
             device = self.get_default_interface_device_name()
 
         regex = r"""\d+: # leading number
-                \s+\w+ # interface name
+                \s+[\w\.-]+ # interface name
                 \s+inet6?\s+(\S+) # IP address, prefix
                 .*global # global scope, not host scope"""
 
